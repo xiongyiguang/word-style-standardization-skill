@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+input/
+output/
+
+~$*.docx
+Q-研发质量管理.docx
+Harness新范式介绍与平台差异分析.docx
+
+.DS_Store
+Thumbs.db
