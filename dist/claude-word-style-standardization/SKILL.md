@@ -74,7 +74,7 @@ The script applies the bundled template styles:
 - Body text that starts with `一、二、三`, `1、2、3`, or `1）、2）、3）` must remain manual numbering text. Do not apply template numbering styles such as `P1`, `P2123`, or `P3123`.
 - For non-heading body paragraphs with Word automatic numbering, first compute the visible numbering text from the source `word/numbering.xml`, insert it at the start of the paragraph as normal text, and then remove `w:numPr`.
 - Do not manually add numbering text to headings; heading numbering should remain controlled by the template heading styles.
-- Use explicit bullet list styles only for clear bullet markers such as `•`, `●`, `▪`, `→`, `✓`, or dash bullets.
+- Use explicit bullet list styles only when the paragraph text itself starts with clear bullet markers such as `•`, `●`, `▪`, `→`, `✓`, or dash bullets. Do not apply `P2/P3/P4` merely because a paragraph has `w:numPr` automatic numbering or indentation; otherwise the output can show duplicated markers such as an arrow plus `1)`.
 
 ## Required Verification
 

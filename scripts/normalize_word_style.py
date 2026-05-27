@@ -431,27 +431,8 @@ def has_numpr(p: etree._Element) -> bool:
 
 
 def bullet_level(p: etree._Element, text: str) -> Optional[int]:
-    # 优先读取 Word 自动编号层级。
-    nodes = p.xpath("./w:pPr/w:numPr/w:ilvl", namespaces=NS)
-    if nodes:
-        val = nodes[0].get(qn("w:val"))
-        if val is not None and val.isdigit():
-            return min(int(val) + 1, 3)
-    # 其次按缩进判断。
-    ind = p.xpath("./w:pPr/w:ind", namespaces=NS)
-    if ind:
-        left = ind[0].get(qn("w:left")) or ind[0].get(qn("w:start"))
-        try:
-            left_val = int(left or "0")
-            if left_val >= 1440:
-                return 3
-            if left_val >= 720:
-                return 2
-            if left_val > 0:
-                return 1
-        except ValueError:
-            pass
-    # 最后按明确的项目符号判断。中文/数字编号保留为正文中的手工编号文本。
+    # 只按文本中的明确项目符号判断。自动编号和缩进只用于编号物化，
+    # 不能触发 P2/P3/P4，否则会出现“箭头样式 + 1)”的重复编号。
     if any(pat.match(text) for pat in BULLET_MARKERS):
         leading_spaces = len(text) - len(text.lstrip())
         if leading_spaces >= 4:
