@@ -215,7 +215,7 @@ class NumberingMaterializer:
         self.definitions = definitions
         self.counters: Dict[str, Dict[int, int]] = {}
 
-    def text_for(self, p: etree._Element) -> Optional[str]:
+    def level_info(self, p: etree._Element) -> Optional[Tuple[str, int, Dict[str, str]]]:
         nodes = p.xpath("./w:pPr/w:numPr", namespaces=NS)
         if not nodes:
             return None
@@ -231,9 +231,30 @@ class NumberingMaterializer:
         levels = self.definitions.get(num_id)
         if not levels or ilvl not in levels:
             return None
+        return num_id, ilvl, levels[ilvl]
+
+    def is_bullet(self, p: etree._Element) -> bool:
+        info = self.level_info(p)
+        return bool(info and info[2].get("fmt") == "bullet")
+
+    def bullet_level(self, p: etree._Element) -> Optional[int]:
+        info = self.level_info(p)
+        if not info or info[2].get("fmt") != "bullet":
+            return None
+        return min(info[1] + 1, 3)
+
+    def text_for(self, p: etree._Element) -> Optional[str]:
+        info = self.level_info(p)
+        if not info:
+            return None
+        num_id, ilvl, level_def = info
+        if level_def.get("fmt") == "bullet":
+            return None
+        levels = self.definitions.get(num_id)
+        if not levels:
+            return None
 
         counters = self.counters.setdefault(num_id, {})
-        level_def = levels[ilvl]
         start = int(level_def.get("start", "1")) if level_def.get("start", "1").isdigit() else 1
         counters[ilvl] = counters.get(ilvl, start - 1) + 1
         for lower_level in list(counters):
@@ -247,8 +268,6 @@ class NumberingMaterializer:
                 continue
             fmt = levels.get(idx, {}).get("fmt", "decimal")
             text = text.replace(f"%{idx + 1}", format_number(value, fmt))
-        if level_def.get("fmt") == "bullet":
-            text = text.replace("%1", "").replace("%2", "").replace("%3", "")
         return text.strip()
 
 
@@ -430,7 +449,11 @@ def has_numpr(p: etree._Element) -> bool:
     return bool(p.xpath("./w:pPr/w:numPr", namespaces=NS))
 
 
-def bullet_level(p: etree._Element, text: str) -> Optional[int]:
+def bullet_level(p: etree._Element, text: str, numbering: NumberingMaterializer) -> Optional[int]:
+    auto_bullet_level = numbering.bullet_level(p)
+    if auto_bullet_level:
+        return auto_bullet_level
+
     # 只按文本中的明确项目符号判断。自动编号和缩进只用于编号物化，
     # 不能触发 P2/P3/P4，否则会出现“箭头样式 + 1)”的重复编号。
     if any(pat.match(text) for pat in BULLET_MARKERS):
@@ -457,7 +480,7 @@ def style_hint_contains(style_hints: Dict[str, object], kind: str, style_id: Opt
     return bool(style_id and isinstance(values, set) and style_id in values)
 
 
-def choose_style(p: etree._Element, style_hints: Dict[str, object]) -> Tuple[str, bool]:
+def choose_style(p: etree._Element, style_hints: Dict[str, object], numbering: NumberingMaterializer) -> Tuple[str, bool]:
     """返回 (style_id, should_remove_numpr)。"""
     text = get_text(p)
     current = get_pstyle(p)
@@ -474,7 +497,7 @@ def choose_style(p: etree._Element, style_hints: Dict[str, object]) -> Tuple[str
     if is_in_table(p) or style_hint_contains(style_hints, "table", current):
         return STYLE["table"], True
 
-    lvl = bullet_level(p, text)
+    lvl = bullet_level(p, text, numbering)
     if lvl:
         return STYLE[f"list{lvl}"], True
 
@@ -490,7 +513,7 @@ def normalize_xml(file: Path, style_hints: Dict[str, object], numbering: Numberi
     stats = Counter()
 
     for p in root.xpath(".//w:p", namespaces=NS):
-        style_id, remove_numbering = choose_style(p, style_hints)
+        style_id, remove_numbering = choose_style(p, style_hints, numbering)
         set_pstyle(p, style_id)
         if remove_numbering:
             prefix = numbering.text_for(p)
