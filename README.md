@@ -54,3 +54,31 @@ Claude 可用版本已打包在：
 ```text
 dist/claude-word-style-standardization.zip
 ```
+
+## 语义分类实验分支
+
+`semantic-style-classifier` 分支提供可选的大模型语义分类能力。默认不开启，保持确定性规则。
+
+启用方式：
+
+```bash
+OPENAI_API_KEY=... \
+.venv/bin/python scripts/normalize_word_style.py \
+  --input input/source.docx \
+  --template assets/标准样式Word文档.docx \
+  --output output/source_标准样式规整.docx \
+  --report output/source_样式规整校验报告.md \
+  --semantic-classify \
+  --semantic-model gpt-4.1-mini
+```
+
+也支持 OpenAI-compatible API：
+
+```bash
+LLM_API_KEY=... \
+LLM_BASE_URL=https://example.com/v1 \
+LLM_MODEL=your-model \
+.venv/bin/python scripts/normalize_word_style.py ... --semantic-classify
+```
+
+语义分类只参与标题、正文、粗体正文、项目符号列表的样式判断。图片、表格、对象关系、自动编号转手工编号、对象数量校验仍由确定性规则处理。

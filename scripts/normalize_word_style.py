@@ -12,14 +12,17 @@ Word 标准样式规整脚本
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
 import tempfile
+import urllib.error
+import urllib.request
 import zipfile
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from lxml import etree
 
@@ -60,6 +63,25 @@ BULLET_MARKERS = [
     re.compile(r"^\s*[•●▪◦◆◇■□▶▷→✓✔※]\s*"),
     re.compile(r"^\s*[-–—]\s+"),
 ]
+
+SEMANTIC_LABEL_TO_STYLE = {
+    "heading1": STYLE["heading"][1],
+    "heading2": STYLE["heading"][2],
+    "heading3": STYLE["heading"][3],
+    "heading4": STYLE["heading"][4],
+    "heading5": STYLE["heading"][5],
+    "heading6": STYLE["heading"][6],
+    "heading7": STYLE["heading"][7],
+    "heading8": STYLE["heading"][8],
+    "heading9": STYLE["heading"][9],
+    "body": STYLE["body"],
+    "bold_body": STYLE["bold_body"],
+    "bullet1": STYLE["list1"],
+    "bullet2": STYLE["list2"],
+    "bullet3": STYLE["list3"],
+}
+
+SEMANTIC_LABELS = set(SEMANTIC_LABEL_TO_STYLE)
 
 
 def qn(tag: str) -> str:
@@ -352,6 +374,10 @@ def get_text(p: etree._Element) -> str:
     return "".join(texts).strip()
 
 
+def paragraph_has_text(p: etree._Element) -> bool:
+    return bool(get_text(p))
+
+
 def get_pstyle(p: etree._Element) -> Optional[str]:
     nodes = p.xpath("./w:pPr/w:pStyle", namespaces=NS)
     if not nodes:
@@ -476,40 +502,218 @@ def style_hint_contains(style_hints: Dict[str, object], kind: str, style_id: Opt
     return bool(style_id and isinstance(values, set) and style_id in values)
 
 
-def choose_style(p: etree._Element, style_hints: Dict[str, object]) -> Tuple[str, bool]:
+class SemanticStyleClassifier:
+    def __init__(
+        self,
+        enabled: bool,
+        model: str,
+        base_url: str,
+        api_key: Optional[str],
+        min_confidence: float,
+        batch_size: int,
+    ):
+        self.enabled = enabled
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.min_confidence = min_confidence
+        self.batch_size = max(batch_size, 1)
+        self.cache: Dict[str, Tuple[str, float]] = {}
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> "SemanticStyleClassifier":
+        api_key = args.semantic_api_key or os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
+        base_url = args.semantic_base_url or os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_BASE_URL") or "https://api.openai.com/v1"
+        model = args.semantic_model or os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "gpt-4.1-mini"
+        enabled = bool(args.semantic_classify)
+        if enabled and not api_key:
+            raise SystemExit("启用 --semantic-classify 需要设置 OPENAI_API_KEY、LLM_API_KEY 或 --semantic-api-key。")
+        return cls(enabled, model, base_url, api_key, args.semantic_min_confidence, args.semantic_batch_size)
+
+    def classify(self, items: Sequence[Dict[str, object]]) -> Dict[int, Tuple[str, float]]:
+        if not self.enabled or not items:
+            return {}
+
+        missing = [item for item in items if str(item["text"]) not in self.cache]
+        for start in range(0, len(missing), self.batch_size):
+            batch = missing[start : start + self.batch_size]
+            for text, result in self._classify_batch(batch).items():
+                self.cache[text] = result
+
+        results: Dict[int, Tuple[str, float]] = {}
+        for item in items:
+            text = str(item["text"])
+            if text in self.cache:
+                results[int(item["idx"])] = self.cache[text]
+        return results
+
+    def _classify_batch(self, items: Sequence[Dict[str, object]]) -> Dict[str, Tuple[str, float]]:
+        prompt_items = [
+            {
+                "idx": item["idx"],
+                "text": item["text"],
+                "prev": item.get("prev", ""),
+                "next": item.get("next", ""),
+                "source_style": item.get("source_style", ""),
+                "in_table": item.get("in_table", False),
+                "has_numbering": item.get("has_numbering", False),
+            }
+            for item in items
+        ]
+        system = (
+            "You classify Chinese Word document paragraphs into template style labels. "
+            "Return strict JSON only. Allowed labels: "
+            "heading1, heading2, heading3, heading4, heading5, heading6, heading7, heading8, heading9, "
+            "body, bold_body, bullet1, bullet2, bullet3. "
+            "Do not classify formulas, amounts, dates, numeric calculations, or ordinary numbered body text as headings. "
+            "Only use heading labels when the paragraph is semantically a section title in the surrounding context. "
+            "For Chinese or numeric manual numbering inside body text, usually choose body or bold_body, not bullet labels. "
+            "Use bullet labels only for real bullet-list items."
+        )
+        user = {
+            "task": "Classify each paragraph. Confidence must be 0.0 to 1.0.",
+            "output_schema": {"items": [{"idx": 1, "label": "body", "confidence": 0.75, "reason": "short reason"}]},
+            "paragraphs": prompt_items,
+        }
+        payload = {
+            "model": self.model,
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+            ],
+        }
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.URLError as exc:
+            raise SystemExit(f"语义分类请求失败：{exc}") from exc
+
+        try:
+            data = json.loads(raw)
+            content = data["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+        except (KeyError, ValueError, TypeError) as exc:
+            raise SystemExit(f"语义分类响应不是有效 JSON：{raw[:500]}") from exc
+
+        by_idx = {int(item["idx"]): item for item in prompt_items}
+        results: Dict[str, Tuple[str, float]] = {}
+        for item in parsed.get("items", []):
+            try:
+                idx = int(item["idx"])
+                label = str(item["label"]).strip()
+                confidence = float(item.get("confidence", 0))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if idx not in by_idx or label not in SEMANTIC_LABELS:
+                continue
+            if confidence < self.min_confidence:
+                continue
+            results[str(by_idx[idx]["text"])] = (label, confidence)
+        return results
+
+
+def semantic_candidate(p: etree._Element) -> bool:
+    if not paragraph_has_text(p):
+        return False
+    if has_image_or_object(p):
+        return False
+    if is_in_table(p):
+        return False
+    return True
+
+
+def collect_semantic_items(root: etree._Element, style_hints: Dict[str, object]) -> List[Dict[str, object]]:
+    paragraphs = root.xpath(".//w:p", namespaces=NS)
+    texts = [get_text(p) for p in paragraphs]
+    items: List[Dict[str, object]] = []
+    for idx, p in enumerate(paragraphs):
+        if not semantic_candidate(p):
+            continue
+        text = texts[idx]
+        prev_text = next((texts[i] for i in range(idx - 1, -1, -1) if texts[i]), "")
+        next_text = next((texts[i] for i in range(idx + 1, len(texts)) if texts[i]), "")
+        current = get_pstyle(p)
+        existing_level = heading_level_from_existing(current, style_hints)
+        if existing_level:
+            # 已有明确标题语义时仍用确定性规则，避免模型改写源样式含义。
+            continue
+        items.append(
+            {
+                "idx": idx,
+                "text": text[:500],
+                "prev": prev_text[:250],
+                "next": next_text[:250],
+                "source_style": current or "",
+                "in_table": is_in_table(p),
+                "has_numbering": has_numpr(p),
+            }
+        )
+    return items
+
+
+def choose_style(
+    p: etree._Element,
+    style_hints: Dict[str, object],
+    semantic_result: Optional[Tuple[str, float]] = None,
+) -> Tuple[str, bool, str]:
     """返回 (style_id, should_remove_numpr)。"""
     text = get_text(p)
     current = get_pstyle(p)
 
     if has_image_or_object(p) or style_hint_contains(style_hints, "image", current):
-        return STYLE["image"], False
+        return STYLE["image"], False, "rule:image"
 
     # 标题只依据源文档已有样式语义判断。不要按文本编号猜标题，
     # 否则公式、金额、交易量等以数字开头的正文会被误套标题样式。
     level = heading_level_from_existing(current, style_hints)
     if level:
-        return STYLE["heading"][level], False
+        return STYLE["heading"][level], False, "rule:source-heading"
 
     if is_in_table(p) or style_hint_contains(style_hints, "table", current):
-        return STYLE["table"], True
+        return STYLE["table"], True, "rule:table"
+
+    if semantic_result:
+        label, confidence = semantic_result
+        style_id = SEMANTIC_LABEL_TO_STYLE.get(label)
+        if style_id:
+            return style_id, True, f"semantic:{label}:{confidence:.2f}"
 
     lvl = bullet_level(p, text)
     if lvl:
-        return STYLE[f"list{lvl}"], True
+        return STYLE[f"list{lvl}"], True, "rule:bullet"
 
     if text and (style_hint_contains(style_hints, "bold", current) or is_all_bold(p)) and len(text) <= 80:
-        return STYLE["bold_body"], True
+        return STYLE["bold_body"], True, "rule:bold"
 
-    return STYLE["body"], True
+    return STYLE["body"], True, "rule:body"
 
 
-def normalize_xml(file: Path, style_hints: Dict[str, object], numbering: NumberingMaterializer) -> Counter:
+def normalize_xml(
+    file: Path,
+    style_hints: Dict[str, object],
+    numbering: NumberingMaterializer,
+    semantic_classifier: SemanticStyleClassifier,
+    semantic_stats: Counter,
+) -> Counter:
     parser = etree.XMLParser(remove_blank_text=False, recover=True)
     root = etree.parse(str(file), parser).getroot()
     stats = Counter()
+    semantic_items = collect_semantic_items(root, style_hints)
+    semantic_results = semantic_classifier.classify(semantic_items)
 
-    for p in root.xpath(".//w:p", namespaces=NS):
-        style_id, remove_numbering = choose_style(p, style_hints)
+    for idx, p in enumerate(root.xpath(".//w:p", namespaces=NS)):
+        style_id, remove_numbering, reason = choose_style(p, style_hints, semantic_results.get(idx))
         set_pstyle(p, style_id)
         if remove_numbering:
             prefix = numbering.text_for(p)
@@ -517,6 +721,8 @@ def normalize_xml(file: Path, style_hints: Dict[str, object], numbering: Numberi
                 insert_prefix_text(p, prefix)
             remove_numpr(p)
         stats[style_id] += 1
+        if reason.startswith("semantic:"):
+            semantic_stats[reason] += 1
 
     tree = etree.ElementTree(root)
     tree.write(str(file), xml_declaration=True, encoding="UTF-8", standalone=True)
@@ -532,6 +738,8 @@ def generate_report(
     after: Dict[str, int],
     copied_parts: List[str],
     style_stats: Counter,
+    semantic_stats: Counter,
+    semantic_enabled: bool,
 ) -> None:
     report.parent.mkdir(parents=True, exist_ok=True)
     rows = [
@@ -563,6 +771,16 @@ def generate_report(
         f.write("| --- | ---: |\n")
         for sid, count in style_stats.most_common():
             f.write(f"| `{sid}` | {count} |\n")
+        f.write("\n## 语义分类统计\n\n")
+        if not semantic_enabled:
+            f.write("- 未启用语义分类，全部使用确定性规则。\n")
+        elif semantic_stats:
+            f.write("| 来源 | 段落数量 |\n")
+            f.write("| --- | ---: |\n")
+            for reason, count in semantic_stats.most_common():
+                f.write(f"| `{reason}` | {count} |\n")
+        else:
+            f.write("- 已启用语义分类，但没有段落达到置信度阈值或覆盖条件。\n")
         f.write("\n## 处理结论\n\n")
         if after["media_files"] < before["media_files"] or after["image_relationships"] < before["image_relationships"] or after["tables"] < before["tables"]:
             f.write("本次处理存在对象数量下降，应视为失败输出，请回退源文件重新处理。\n")
@@ -576,6 +794,12 @@ def main() -> None:
     ap.add_argument("--template", required=True, type=Path, help="标准样式 Word 模板 .docx 文件")
     ap.add_argument("--output", required=True, type=Path, help="输出 .docx 文件")
     ap.add_argument("--report", required=True, type=Path, help="校验报告 .md 文件")
+    ap.add_argument("--semantic-classify", action="store_true", help="启用大模型语义分类实验能力")
+    ap.add_argument("--semantic-model", default=None, help="语义分类模型名，默认读取 OPENAI_MODEL/LLM_MODEL")
+    ap.add_argument("--semantic-base-url", default=None, help="OpenAI-compatible API base URL，默认读取 OPENAI_BASE_URL/LLM_BASE_URL")
+    ap.add_argument("--semantic-api-key", default=None, help="语义分类 API key，默认读取 OPENAI_API_KEY/LLM_API_KEY")
+    ap.add_argument("--semantic-min-confidence", type=float, default=0.78, help="语义分类最低置信度")
+    ap.add_argument("--semantic-batch-size", type=int, default=30, help="每次请求分类的段落数量")
     args = ap.parse_args()
 
     if args.input.suffix.lower() != ".docx":
@@ -584,6 +808,7 @@ def main() -> None:
         raise SystemExit("模板必须为 .docx 文件。")
 
     before = count_docx(args.input)
+    semantic_classifier = SemanticStyleClassifier.from_args(args)
 
     with tempfile.TemporaryDirectory() as td:
         temp = Path(td)
@@ -598,13 +823,25 @@ def main() -> None:
         copied_parts = copy_template_parts(template, work)
 
         style_stats = Counter()
+        semantic_stats = Counter()
         for xf in xml_files(work):
-            style_stats.update(normalize_xml(xf, style_hints, numbering))
+            style_stats.update(normalize_xml(xf, style_hints, numbering, semantic_classifier, semantic_stats))
 
         zip_dir(work, args.output)
 
     after = count_docx(args.output)
-    generate_report(args.report, args.input, args.output, args.template, before, after, copied_parts, style_stats)
+    generate_report(
+        args.report,
+        args.input,
+        args.output,
+        args.template,
+        before,
+        after,
+        copied_parts,
+        style_stats,
+        semantic_stats,
+        semantic_classifier.enabled,
+    )
 
     if after["media_files"] < before["media_files"] or after["image_relationships"] < before["image_relationships"] or after["tables"] < before["tables"]:
         raise SystemExit("处理后对象数量下降，已生成报告但不建议交付输出文件。")

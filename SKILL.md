@@ -73,6 +73,32 @@ python scripts/normalize_word_style.py \
   --report output/source_样式规整校验报告.md
 ```
 
+### 语义分类实验模式
+
+默认不启用大模型语义分类。若用户明确要求使用语义分析能力判断标题、正文和列表样式，可开启：
+
+```bash
+OPENAI_API_KEY=... \
+python scripts/normalize_word_style.py \
+  --input input/source.docx \
+  --template assets/标准样式Word文档.docx \
+  --output output/source_标准样式规整.docx \
+  --report output/source_样式规整校验报告.md \
+  --semantic-classify \
+  --semantic-model gpt-4.1-mini
+```
+
+也可使用 OpenAI-compatible API：
+
+```bash
+LLM_API_KEY=... \
+LLM_BASE_URL=https://example.com/v1 \
+LLM_MODEL=your-model \
+python scripts/normalize_word_style.py ... --semantic-classify
+```
+
+语义分类只用于辅助判断 `heading1`-`heading9`、`body`、`bold_body`、`bullet1`-`bullet3`。图片、表格、自动编号转手工编号、对象数量校验仍由确定性规则处理。模型结果低于置信度阈值时应回退规则判断。
+
 ### 处理动作
 
 脚本应执行以下动作：
@@ -89,6 +115,7 @@ python scripts/normalize_word_style.py \
 - 对正文中的中文编号、数字编号、括号编号保留为手工编号文本，不套用 `P1`、`P2123`、`P3123` 等模板编号样式。
 - 除标题外，正文段落若存在 Word 自动编号，应先根据源文档 `word/numbering.xml` 的 `numId`、`ilvl`、`numFmt`、`lvlText` 计算可见编号文本，插入段首变成手工编号，再移除 `w:numPr`，避免正文继续依赖 Word 自动编号。
 - 只有明确项目符号列表才按缩进层级套用箭头、缩进打钩符、缩进四角星样式。
+- 语义分类实验模式下，不得让模型覆盖图片、对象、表格判断；不得让模型删除关系文件或重建正文。
 
 ### 必须校验
 
