@@ -68,10 +68,10 @@ input/source.docx
 ```bash
 python scripts/normalize_word_style.py \
   --input input/source.docx \
-  --template assets/标准样式Word文档.docx \
-  --output output/source_标准样式规整.docx \
-  --report output/source_样式规整校验报告.md
+  --template assets/标准样式Word文档.docx
 ```
+
+默认输出到 `output/<源文件名>_标准样式规整.docx`，校验报告输出到 `output/<源文件名>_样式规整校验报告.md`。如需自定义路径，可显式传入 `--output` 和 `--report`。
 
 ### 处理动作
 

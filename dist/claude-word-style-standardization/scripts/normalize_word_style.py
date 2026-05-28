@@ -198,7 +198,11 @@ def parse_numbering(numbering_file: Path) -> Dict[str, Dict[int, Dict[str, str]]
                 "start": start_node.get(qn("w:val")) if start_node is not None else "1",
                 "fmt": fmt_node.get(qn("w:val")) if fmt_node is not None else "decimal",
                 "text": text_node.get(qn("w:val")) if text_node is not None else f"%{int(ilvl) + 1}.",
+                "left": "",
             }
+            ind_node = lvl.find("./w:pPr/w:ind", namespaces=NS)
+            if ind_node is not None and ind_node.get(qn("w:left")):
+                levels[int(ilvl)]["left"] = ind_node.get(qn("w:left"))
         abstract_levels[aid] = levels
 
     for num in root.xpath("./w:num", namespaces=NS):
@@ -241,6 +245,9 @@ class NumberingMaterializer:
         info = self.level_info(p)
         if not info or info[2].get("fmt") != "bullet":
             return None
+        indent_level = list_level_from_left_indent(info[2].get("left"))
+        if indent_level:
+            return indent_level
         return min(info[1] + 1, 3)
 
     def text_for(self, p: etree._Element) -> Optional[str]:
@@ -449,6 +456,32 @@ def has_numpr(p: etree._Element) -> bool:
     return bool(p.xpath("./w:pPr/w:numPr", namespaces=NS))
 
 
+def list_level_from_left_indent(left: Optional[str]) -> Optional[int]:
+    if not left:
+        return None
+    try:
+        left_twips = int(left)
+    except ValueError:
+        return None
+    if left_twips <= 0:
+        return None
+
+    # The template/source docs use roughly 440 twips per visual bullet indent.
+    # Some Word-generated values are 860 instead of 880, so use broad bands.
+    if left_twips <= 660:
+        return 1
+    if left_twips <= 1100:
+        return 2
+    return 3
+
+
+def paragraph_left_indent(p: etree._Element) -> Optional[str]:
+    nodes = p.xpath("./w:pPr/w:ind", namespaces=NS)
+    if not nodes:
+        return None
+    return nodes[0].get(qn("w:left"))
+
+
 def bullet_level(p: etree._Element, text: str, numbering: NumberingMaterializer) -> Optional[int]:
     auto_bullet_level = numbering.bullet_level(p)
     if auto_bullet_level:
@@ -457,6 +490,9 @@ def bullet_level(p: etree._Element, text: str, numbering: NumberingMaterializer)
     # 只按文本中的明确项目符号判断。自动编号和缩进只用于编号物化，
     # 不能触发 P2/P3/P4，否则会出现“箭头样式 + 1)”的重复编号。
     if any(pat.match(text) for pat in BULLET_MARKERS):
+        indent_level = list_level_from_left_indent(paragraph_left_indent(p))
+        if indent_level:
+            return indent_level
         leading_spaces = len(text) - len(text.lstrip())
         if leading_spaces >= 4:
             return 3
@@ -578,14 +614,17 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="按标准 Word 模板进行原位样式规整")
     ap.add_argument("--input", required=True, type=Path, help="待规整 .docx 文件")
     ap.add_argument("--template", required=True, type=Path, help="标准样式 Word 模板 .docx 文件")
-    ap.add_argument("--output", required=True, type=Path, help="输出 .docx 文件")
-    ap.add_argument("--report", required=True, type=Path, help="校验报告 .md 文件")
+    ap.add_argument("--output", type=Path, help="输出 .docx 文件；默认 output/<源文件名>_标准样式规整.docx")
+    ap.add_argument("--report", type=Path, help="校验报告 .md 文件；默认 output/<源文件名>_样式规整校验报告.md")
     args = ap.parse_args()
 
     if args.input.suffix.lower() != ".docx":
         raise SystemExit("仅支持 .docx 文件；请先将 .doc 转换为 .docx。")
     if args.template.suffix.lower() != ".docx":
         raise SystemExit("模板必须为 .docx 文件。")
+
+    output_file = args.output or Path("output") / f"{args.input.stem}_标准样式规整.docx"
+    report_file = args.report or Path("output") / f"{args.input.stem}_样式规整校验报告.md"
 
     before = count_docx(args.input)
 
@@ -605,10 +644,10 @@ def main() -> None:
         for xf in xml_files(work):
             style_stats.update(normalize_xml(xf, style_hints, numbering))
 
-        zip_dir(work, args.output)
+        zip_dir(work, output_file)
 
-    after = count_docx(args.output)
-    generate_report(args.report, args.input, args.output, args.template, before, after, copied_parts, style_stats)
+    after = count_docx(output_file)
+    generate_report(report_file, args.input, output_file, args.template, before, after, copied_parts, style_stats)
 
     if after["media_files"] < before["media_files"] or after["image_relationships"] < before["image_relationships"] or after["tables"] < before["tables"]:
         raise SystemExit("处理后对象数量下降，已生成报告但不建议交付输出文件。")

@@ -27,10 +27,10 @@ This avoids losing images, tables, headers, footers, object anchors, media refer
 ```bash
 python scripts/normalize_word_style.py \
   --input input/source.docx \
-  --template assets/标准样式Word文档.docx \
-  --output output/source_标准样式规整.docx \
-  --report output/source_样式规整校验报告.md
+  --template assets/标准样式Word文档.docx
 ```
+
+By default, the script writes `output/<source-stem>_标准样式规整.docx` and `output/<source-stem>_样式规整校验报告.md`. Pass `--output` and `--report` only when custom paths are needed.
 
 If Python dependencies are missing, install them in a virtual environment:
 
@@ -39,9 +39,7 @@ python -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python scripts/normalize_word_style.py \
   --input input/source.docx \
-  --template assets/标准样式Word文档.docx \
-  --output output/source_标准样式规整.docx \
-  --report output/source_样式规整校验报告.md
+  --template assets/标准样式Word文档.docx
 ```
 
 ## Style Rules
