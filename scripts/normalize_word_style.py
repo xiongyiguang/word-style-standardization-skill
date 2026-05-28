@@ -39,6 +39,13 @@ STYLE = {
     "list3": "P4",
 }
 
+HEADING_STYLE_IDS = set(STYLE["heading"].values())
+BODY_STYLE_IDS = {STYLE["body"], STYLE["bold_body"], STYLE["table"], STYLE["list1"], STYLE["list2"], STYLE["list3"]}
+PARAGRAPH_DIRECT_FORMAT_TAGS = {"rPr", "spacing", "ind"}
+RUN_DIRECT_FORMAT_TAGS = {"rFonts", "sz", "szCs", "color"}
+HEADING_RUN_DIRECT_FORMAT_TAGS = RUN_DIRECT_FORMAT_TAGS | {"b", "bCs", "i", "iCs", "u", "highlight"}
+TABLE_CELL_DIRECT_FORMAT_TAGS = {"tcBorders", "shd"}
+
 # 候选 XML 文件：正文、页眉页脚、脚注尾注、批注、文本框等常见正文载体。
 XML_CANDIDATE_PATTERNS = (
     re.compile(r"^word/document\.xml$"),
@@ -460,6 +467,53 @@ def set_table_style(tbl: etree._Element, style_id: str, table_look: Optional[etr
         tblpr.append(etree.fromstring(etree.tostring(table_look)))
 
 
+def remove_children_by_local_name(parent: Optional[etree._Element], local_names: Set[str]) -> int:
+    if parent is None:
+        return 0
+    removed = 0
+    for child in list(parent):
+        if etree.QName(child).localname in local_names:
+            parent.remove(child)
+            removed += 1
+    return removed
+
+
+def cleanup_paragraph_direct_formatting(p: etree._Element, style_id: str) -> Counter:
+    stats = Counter()
+    ppr = p.find(qn("w:pPr"))
+    if style_id in HEADING_STYLE_IDS or style_id in BODY_STYLE_IDS:
+        removed = remove_children_by_local_name(ppr, PARAGRAPH_DIRECT_FORMAT_TAGS)
+        if removed:
+            stats["paragraph_direct_format"] += removed
+
+    if style_id in HEADING_STYLE_IDS:
+        run_tags = HEADING_RUN_DIRECT_FORMAT_TAGS
+    elif style_id in BODY_STYLE_IDS:
+        run_tags = RUN_DIRECT_FORMAT_TAGS
+    else:
+        run_tags = set()
+
+    if run_tags:
+        for rpr in p.xpath("./w:r/w:rPr", namespaces=NS):
+            removed = remove_children_by_local_name(rpr, run_tags)
+            if removed:
+                stats["run_direct_format"] += removed
+            if len(rpr) == 0 and not rpr.attrib:
+                parent = rpr.getparent()
+                if parent is not None:
+                    parent.remove(rpr)
+    return stats
+
+
+def cleanup_table_cell_direct_formatting(tbl: etree._Element) -> Counter:
+    stats = Counter()
+    for tcpr in tbl.xpath(".//w:tcPr", namespaces=NS):
+        removed = remove_children_by_local_name(tcpr, TABLE_CELL_DIRECT_FORMAT_TAGS)
+        if removed:
+            stats["table_cell_direct_format"] += removed
+    return stats
+
+
 def remove_numpr(p: etree._Element) -> None:
     ppr = p.find(qn("w:pPr"))
     if ppr is None:
@@ -607,20 +661,23 @@ def normalize_xml(
     numbering: NumberingMaterializer,
     table_style_id: Optional[str],
     table_look: Optional[etree._Element],
-) -> Tuple[Counter, Counter]:
+) -> Tuple[Counter, Counter, Counter]:
     parser = etree.XMLParser(remove_blank_text=False, recover=True)
     root = etree.parse(str(file), parser).getroot()
     stats = Counter()
     table_stats = Counter()
+    cleanup_stats = Counter()
 
     if table_style_id:
         for tbl in root.xpath(".//w:tbl", namespaces=NS):
             set_table_style(tbl, table_style_id, table_look)
+            cleanup_stats.update(cleanup_table_cell_direct_formatting(tbl))
             table_stats[table_style_id] += 1
 
     for p in root.xpath(".//w:p", namespaces=NS):
         style_id, remove_numbering = choose_style(p, style_hints, numbering)
         set_pstyle(p, style_id)
+        cleanup_stats.update(cleanup_paragraph_direct_formatting(p, style_id))
         if remove_numbering:
             prefix = numbering.text_for(p)
             if prefix:
@@ -630,7 +687,7 @@ def normalize_xml(
 
     tree = etree.ElementTree(root)
     tree.write(str(file), xml_declaration=True, encoding="UTF-8", standalone=True)
-    return stats, table_stats
+    return stats, table_stats, cleanup_stats
 
 
 def generate_report(
@@ -644,6 +701,7 @@ def generate_report(
     style_stats: Counter,
     table_style_id: Optional[str],
     table_style_stats: Counter,
+    cleanup_stats: Counter,
 ) -> None:
     report.parent.mkdir(parents=True, exist_ok=True)
     rows = [
@@ -686,6 +744,16 @@ def generate_report(
                 f.write(f"| `{table_style_id}` | 0 |\n")
         else:
             f.write("- 未在模板中找到 `表格标准样式`，本次未改写表格本体样式。\n")
+        f.write("\n## 直接格式清理统计\n\n")
+        f.write("| 清理项 | 数量 |\n")
+        f.write("| --- | ---: |\n")
+        labels = {
+            "paragraph_direct_format": "段落直接格式",
+            "run_direct_format": "文字直接格式",
+            "table_cell_direct_format": "表格单元格边框/底纹直接格式",
+        }
+        for key, label in labels.items():
+            f.write(f"| {label} | {cleanup_stats.get(key, 0)} |\n")
         f.write("\n## 处理结论\n\n")
         if after["media_files"] < before["media_files"] or after["image_relationships"] < before["image_relationships"] or after["tables"] < before["tables"]:
             f.write("本次处理存在对象数量下降，应视为失败输出，请回退源文件重新处理。\n")
@@ -736,10 +804,18 @@ def normalize_docx(
 
         style_stats = Counter()
         table_style_stats = Counter()
+        cleanup_stats = Counter()
         for xf in xml_files(work):
-            xml_style_stats, xml_table_style_stats = normalize_xml(xf, style_hints, numbering, table_style_id, table_look)
+            xml_style_stats, xml_table_style_stats, xml_cleanup_stats = normalize_xml(
+                xf,
+                style_hints,
+                numbering,
+                table_style_id,
+                table_look,
+            )
             style_stats.update(xml_style_stats)
             table_style_stats.update(xml_table_style_stats)
+            cleanup_stats.update(xml_cleanup_stats)
 
         zip_dir(work, output_file)
 
@@ -755,6 +831,7 @@ def normalize_docx(
         style_stats,
         table_style_id,
         table_style_stats,
+        cleanup_stats,
     )
 
     if after["media_files"] < before["media_files"] or after["image_relationships"] < before["image_relationships"] or after["tables"] < before["tables"]:
