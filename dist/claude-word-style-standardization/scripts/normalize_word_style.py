@@ -610,6 +610,60 @@ def generate_report(
             f.write("本次处理未发现媒体文件、图片关系或表格数量下降。仍建议用 Word 打开输出文件，刷新目录并进行版面抽查。\n")
 
 
+def default_output_paths(input_file: Path) -> Tuple[Path, Path]:
+    return (
+        Path("output") / f"{input_file.stem}_标准样式规整.docx",
+        Path("output") / f"{input_file.stem}_样式规整校验报告.md",
+    )
+
+
+def normalize_docx(
+    input_file: Path,
+    template_file: Path,
+    output_file: Optional[Path] = None,
+    report_file: Optional[Path] = None,
+) -> Tuple[Path, Path, Dict[str, int], Dict[str, int]]:
+    input_file = Path(input_file)
+    template_file = Path(template_file)
+
+    if input_file.suffix.lower() != ".docx":
+        raise ValueError("仅支持 .docx 文件；请先将 .doc 转换为 .docx。")
+    if template_file.suffix.lower() != ".docx":
+        raise ValueError("模板必须为 .docx 文件。")
+
+    default_output, default_report = default_output_paths(input_file)
+    output_file = Path(output_file) if output_file else default_output
+    report_file = Path(report_file) if report_file else default_report
+
+    before = count_docx(input_file)
+
+    with tempfile.TemporaryDirectory() as td:
+        temp = Path(td)
+        work = temp / "work"
+        template = temp / "template"
+        work.mkdir()
+        template.mkdir()
+        unzip_docx(input_file, work)
+        unzip_docx(template_file, template)
+        style_hints = parse_style_hints(work / "word/styles.xml")
+        numbering = NumberingMaterializer(parse_numbering(work / "word/numbering.xml"))
+        copied_parts = copy_template_parts(template, work)
+
+        style_stats = Counter()
+        for xf in xml_files(work):
+            style_stats.update(normalize_xml(xf, style_hints, numbering))
+
+        zip_dir(work, output_file)
+
+    after = count_docx(output_file)
+    generate_report(report_file, input_file, output_file, template_file, before, after, copied_parts, style_stats)
+
+    if after["media_files"] < before["media_files"] or after["image_relationships"] < before["image_relationships"] or after["tables"] < before["tables"]:
+        raise RuntimeError("处理后对象数量下降，已生成报告但不建议交付输出文件。")
+
+    return output_file, report_file, before, after
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="按标准 Word 模板进行原位样式规整")
     ap.add_argument("--input", required=True, type=Path, help="待规整 .docx 文件")
@@ -623,34 +677,10 @@ def main() -> None:
     if args.template.suffix.lower() != ".docx":
         raise SystemExit("模板必须为 .docx 文件。")
 
-    output_file = args.output or Path("output") / f"{args.input.stem}_标准样式规整.docx"
-    report_file = args.report or Path("output") / f"{args.input.stem}_样式规整校验报告.md"
-
-    before = count_docx(args.input)
-
-    with tempfile.TemporaryDirectory() as td:
-        temp = Path(td)
-        work = temp / "work"
-        template = temp / "template"
-        work.mkdir()
-        template.mkdir()
-        unzip_docx(args.input, work)
-        unzip_docx(args.template, template)
-        style_hints = parse_style_hints(work / "word/styles.xml")
-        numbering = NumberingMaterializer(parse_numbering(work / "word/numbering.xml"))
-        copied_parts = copy_template_parts(template, work)
-
-        style_stats = Counter()
-        for xf in xml_files(work):
-            style_stats.update(normalize_xml(xf, style_hints, numbering))
-
-        zip_dir(work, output_file)
-
-    after = count_docx(output_file)
-    generate_report(report_file, args.input, output_file, args.template, before, after, copied_parts, style_stats)
-
-    if after["media_files"] < before["media_files"] or after["image_relationships"] < before["image_relationships"] or after["tables"] < before["tables"]:
-        raise SystemExit("处理后对象数量下降，已生成报告但不建议交付输出文件。")
+    try:
+        normalize_docx(args.input, args.template, args.output, args.report)
+    except (ValueError, RuntimeError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":

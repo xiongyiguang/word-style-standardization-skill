@@ -55,3 +55,23 @@ Claude 可用版本已打包在：
 ```text
 dist/claude-word-style-standardization.zip
 ```
+
+## Windows 独立版
+
+没有 skill 环境的同事可使用 Windows 图形界面独立版。打包说明见：
+
+```text
+packaging/README_WINDOWS_EXE.md
+```
+
+在 Windows 上运行：
+
+```text
+packaging/build_windows_exe.bat
+```
+
+生成：
+
+```text
+dist/windows/WordStyleStandardizer.exe
+```
