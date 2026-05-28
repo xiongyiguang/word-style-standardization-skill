@@ -135,6 +135,41 @@ def copy_template_parts(template_dir: Path, work_dir: Path) -> List[str]:
     return copied
 
 
+def parse_table_style_id(styles_file: Path, style_name: str = "表格标准样式") -> Optional[str]:
+    if not styles_file.exists():
+        return None
+
+    parser = etree.XMLParser(remove_blank_text=False, recover=True)
+    root = etree.parse(str(styles_file), parser).getroot()
+    fallback = None
+    for style in root.xpath(".//w:style[@w:type='table']", namespaces=NS):
+        sid = style.get(qn("w:styleId"))
+        name_node = style.find(qn("w:name"))
+        name = (name_node.get(qn("w:val")) if name_node is not None else "").strip()
+        if not sid:
+            continue
+        if name == style_name:
+            return sid
+        if style_name in name or name in style_name:
+            fallback = fallback or sid
+    return fallback
+
+
+def parse_template_table_look(document_file: Path, table_style_id: Optional[str]) -> Optional[etree._Element]:
+    if not table_style_id or not document_file.exists():
+        return None
+
+    parser = etree.XMLParser(remove_blank_text=False, recover=True)
+    root = etree.parse(str(document_file), parser).getroot()
+    for tbl in root.xpath(".//w:tbl", namespaces=NS):
+        sid = tbl.xpath("./w:tblPr/w:tblStyle/@w:val", namespaces=NS)
+        if sid and sid[0] == table_style_id:
+            look = tbl.find("./w:tblPr/w:tblLook", namespaces=NS)
+            if look is not None:
+                return look
+    return None
+
+
 def int_to_chinese(num: int) -> str:
     digits = "零一二三四五六七八九"
     units = ["", "十", "百", "千"]
@@ -393,6 +428,14 @@ def ensure_ppr(p: etree._Element) -> etree._Element:
     return ppr
 
 
+def ensure_tblpr(tbl: etree._Element) -> etree._Element:
+    tblpr = tbl.find(qn("w:tblPr"))
+    if tblpr is None:
+        tblpr = etree.Element(qn("w:tblPr"))
+        tbl.insert(0, tblpr)
+    return tblpr
+
+
 def set_pstyle(p: etree._Element, style_id: str) -> None:
     ppr = ensure_ppr(p)
     pstyle = ppr.find(qn("w:pStyle"))
@@ -400,6 +443,21 @@ def set_pstyle(p: etree._Element, style_id: str) -> None:
         pstyle = etree.Element(qn("w:pStyle"))
         ppr.insert(0, pstyle)
     pstyle.set(qn("w:val"), style_id)
+
+
+def set_table_style(tbl: etree._Element, style_id: str, table_look: Optional[etree._Element]) -> None:
+    tblpr = ensure_tblpr(tbl)
+    tblstyle = tblpr.find(qn("w:tblStyle"))
+    if tblstyle is None:
+        tblstyle = etree.Element(qn("w:tblStyle"))
+        tblpr.insert(0, tblstyle)
+    tblstyle.set(qn("w:val"), style_id)
+
+    if table_look is not None:
+        existing_look = tblpr.find(qn("w:tblLook"))
+        if existing_look is not None:
+            tblpr.remove(existing_look)
+        tblpr.append(etree.fromstring(etree.tostring(table_look)))
 
 
 def remove_numpr(p: etree._Element) -> None:
@@ -543,10 +601,22 @@ def choose_style(p: etree._Element, style_hints: Dict[str, object], numbering: N
     return STYLE["body"], True
 
 
-def normalize_xml(file: Path, style_hints: Dict[str, object], numbering: NumberingMaterializer) -> Counter:
+def normalize_xml(
+    file: Path,
+    style_hints: Dict[str, object],
+    numbering: NumberingMaterializer,
+    table_style_id: Optional[str],
+    table_look: Optional[etree._Element],
+) -> Tuple[Counter, Counter]:
     parser = etree.XMLParser(remove_blank_text=False, recover=True)
     root = etree.parse(str(file), parser).getroot()
     stats = Counter()
+    table_stats = Counter()
+
+    if table_style_id:
+        for tbl in root.xpath(".//w:tbl", namespaces=NS):
+            set_table_style(tbl, table_style_id, table_look)
+            table_stats[table_style_id] += 1
 
     for p in root.xpath(".//w:p", namespaces=NS):
         style_id, remove_numbering = choose_style(p, style_hints, numbering)
@@ -560,7 +630,7 @@ def normalize_xml(file: Path, style_hints: Dict[str, object], numbering: Numberi
 
     tree = etree.ElementTree(root)
     tree.write(str(file), xml_declaration=True, encoding="UTF-8", standalone=True)
-    return stats
+    return stats, table_stats
 
 
 def generate_report(
@@ -572,6 +642,8 @@ def generate_report(
     after: Dict[str, int],
     copied_parts: List[str],
     style_stats: Counter,
+    table_style_id: Optional[str],
+    table_style_stats: Counter,
 ) -> None:
     report.parent.mkdir(parents=True, exist_ok=True)
     rows = [
@@ -603,6 +675,17 @@ def generate_report(
         f.write("| --- | ---: |\n")
         for sid, count in style_stats.most_common():
             f.write(f"| `{sid}` | {count} |\n")
+        f.write("\n## 表格样式套用统计\n\n")
+        if table_style_id:
+            f.write(f"- 目标表格样式：`表格标准样式` (`{table_style_id}`)\n\n")
+            f.write("| table styleId | 表格数量 |\n")
+            f.write("| --- | ---: |\n")
+            for sid, count in table_style_stats.most_common():
+                f.write(f"| `{sid}` | {count} |\n")
+            if not table_style_stats:
+                f.write(f"| `{table_style_id}` | 0 |\n")
+        else:
+            f.write("- 未在模板中找到 `表格标准样式`，本次未改写表格本体样式。\n")
         f.write("\n## 处理结论\n\n")
         if after["media_files"] < before["media_files"] or after["image_relationships"] < before["image_relationships"] or after["tables"] < before["tables"]:
             f.write("本次处理存在对象数量下降，应视为失败输出，请回退源文件重新处理。\n")
@@ -647,16 +730,32 @@ def normalize_docx(
         unzip_docx(template_file, template)
         style_hints = parse_style_hints(work / "word/styles.xml")
         numbering = NumberingMaterializer(parse_numbering(work / "word/numbering.xml"))
+        table_style_id = parse_table_style_id(template / "word/styles.xml")
+        table_look = parse_template_table_look(template / "word/document.xml", table_style_id)
         copied_parts = copy_template_parts(template, work)
 
         style_stats = Counter()
+        table_style_stats = Counter()
         for xf in xml_files(work):
-            style_stats.update(normalize_xml(xf, style_hints, numbering))
+            xml_style_stats, xml_table_style_stats = normalize_xml(xf, style_hints, numbering, table_style_id, table_look)
+            style_stats.update(xml_style_stats)
+            table_style_stats.update(xml_table_style_stats)
 
         zip_dir(work, output_file)
 
     after = count_docx(output_file)
-    generate_report(report_file, input_file, output_file, template_file, before, after, copied_parts, style_stats)
+    generate_report(
+        report_file,
+        input_file,
+        output_file,
+        template_file,
+        before,
+        after,
+        copied_parts,
+        style_stats,
+        table_style_id,
+        table_style_stats,
+    )
 
     if after["media_files"] < before["media_files"] or after["image_relationships"] < before["image_relationships"] or after["tables"] < before["tables"]:
         raise RuntimeError("处理后对象数量下降，已生成报告但不建议交付输出文件。")

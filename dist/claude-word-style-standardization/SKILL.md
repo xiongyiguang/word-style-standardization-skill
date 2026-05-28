@@ -59,6 +59,7 @@ The script applies the bundled template styles:
 | Heading 9 | `9` |
 | Body paragraph | `P1505` |
 | Short bold body paragraph | `P` |
+| Table object | table style named `表格标准样式` |
 | Table paragraph | `P5` |
 | Image/object paragraph | `P6` |
 | Explicit bullet list level 1 | `P2` |
@@ -74,6 +75,8 @@ The script applies the bundled template styles:
 - Do not manually add numbering text to headings; heading numbering should remain controlled by the template heading styles.
 - Use explicit bullet list styles only when the paragraph text itself starts with clear bullet markers such as `•`, `●`, `▪`, `→`, `✓`, or dash bullets, or when the source automatic numbering definition has `numFmt=bullet`.
 - Do not apply `P2/P3/P4` to decimal, Chinese, or parenthesized automatic numbering. Convert those to manual text such as `1)`, `1、`, or `一、`, then use a body style; otherwise the output can show duplicated markers such as an arrow plus `1)`.
+- Apply the template table style named `表格标准样式` to table objects by resolving its real table styleId from the template. Do not hard-code the styleId.
+- For tables, only update `w:tblPr/w:tblStyle` and the template `w:tblLook`; do not rebuild tables or change rows, columns, merged cells, images, or embedded objects.
 
 ## Required Verification
 
@@ -83,6 +86,7 @@ After generating the output, inspect the report and confirm:
 - Image relationship count did not decrease.
 - Paragraph count is unchanged.
 - Table count is unchanged.
+- Tables use the template table style named `表格标准样式`.
 - Normal/body-default style usage is reduced.
 - Non-heading automatic numbering has been removed or reduced after manual-number conversion.
 - Heading style statistics match source heading semantics.
