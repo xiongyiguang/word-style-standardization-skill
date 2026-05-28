@@ -86,7 +86,8 @@ python scripts/normalize_word_style.py \
 - 对标题段落套用对应标题样式。标题层级只能根据源文档已有 heading 1-9 样式或继承自 heading 1-9 的样式判断，不得仅凭文本编号、中文编号或阿拉伯数字编号推断标题。
 - 对表格本体套用模板中的“表格标准样式”。应从模板 `word/styles.xml` 按样式名解析真实 table styleId，不得硬编码某个 styleId。
 - 表格本体只改写 `w:tblPr/w:tblStyle` 和必要的 `w:tblLook`，不得重建表格，不得改动行列结构、合并单元格、表格内图片或嵌入对象。
-- 对表格单元格清理会覆盖表格样式的直接边框和底纹，即 `w:tcPr/w:tcBorders`、`w:tcPr/w:shd`；不得删除 `gridSpan`、`vMerge`、`tcW`、`vAlign`、`textDirection` 等结构和排版属性。
+- 对表格单元格清理会覆盖表格样式的直接边框和底纹，即 `w:tcPr/w:tcBorders`、`w:tcPr/w:shd`；不得删除 `gridSpan`、`vMerge`、`vAlign`、`textDirection` 等结构和排版属性。
+- 对表格列宽清理源文档列宽约束，删除 `w:tblGrid` 和 `w:tcPr/w:tcW`，但保留整表宽度 `w:tblPr/w:tblW`，使表格保持页面总宽并由 Word 重新自动分配列宽。
 - 对表格单元格中的普通段落套用表格样式。
 - 对标题段落清理段落和文字直接格式，使标题尽量完全服从模板标题样式。
 - 对正文、列表、表格段落清理字体、字号、颜色、段落间距和缩进等直接格式；保留加粗、斜体、下划线、高亮等可能承载语义的文字格式。

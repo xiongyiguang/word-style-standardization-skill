@@ -45,6 +45,7 @@ PARAGRAPH_DIRECT_FORMAT_TAGS = {"rPr", "spacing", "ind"}
 RUN_DIRECT_FORMAT_TAGS = {"rFonts", "sz", "szCs", "color"}
 HEADING_RUN_DIRECT_FORMAT_TAGS = RUN_DIRECT_FORMAT_TAGS | {"b", "bCs", "i", "iCs", "u", "highlight"}
 TABLE_CELL_DIRECT_FORMAT_TAGS = {"tcBorders", "shd"}
+TABLE_CELL_WIDTH_TAGS = {"tcW"}
 
 # 候选 XML 文件：正文、页眉页脚、脚注尾注、批注、文本框等常见正文载体。
 XML_CANDIDATE_PATTERNS = (
@@ -507,10 +508,18 @@ def cleanup_paragraph_direct_formatting(p: etree._Element, style_id: str) -> Cou
 
 def cleanup_table_cell_direct_formatting(tbl: etree._Element) -> Counter:
     stats = Counter()
+    tbl_grid = tbl.find(qn("w:tblGrid"))
+    if tbl_grid is not None:
+        tbl.remove(tbl_grid)
+        stats["table_column_width_format"] += 1
+
     for tcpr in tbl.xpath(".//w:tcPr", namespaces=NS):
         removed = remove_children_by_local_name(tcpr, TABLE_CELL_DIRECT_FORMAT_TAGS)
         if removed:
             stats["table_cell_direct_format"] += removed
+        removed_width = remove_children_by_local_name(tcpr, TABLE_CELL_WIDTH_TAGS)
+        if removed_width:
+            stats["table_column_width_format"] += removed_width
     return stats
 
 
@@ -751,6 +760,7 @@ def generate_report(
             "paragraph_direct_format": "段落直接格式",
             "run_direct_format": "文字直接格式",
             "table_cell_direct_format": "表格单元格边框/底纹直接格式",
+            "table_column_width_format": "表格列宽直接格式",
         }
         for key, label in labels.items():
             f.write(f"| {label} | {cleanup_stats.get(key, 0)} |\n")
