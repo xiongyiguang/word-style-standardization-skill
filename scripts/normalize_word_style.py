@@ -468,6 +468,26 @@ def set_table_style(tbl: etree._Element, style_id: str, table_look: Optional[etr
         tblpr.append(etree.fromstring(etree.tostring(table_look)))
 
 
+def normalize_table_width(tbl: etree._Element) -> Counter:
+    stats = Counter()
+    tblpr = ensure_tblpr(tbl)
+    tblw = tblpr.find(qn("w:tblW"))
+    if tblw is None:
+        tblw = etree.Element(qn("w:tblW"))
+        insert_at = 1 if tblpr.find(qn("w:tblStyle")) is not None else 0
+        tblpr.insert(insert_at, tblw)
+        stats["table_width_format"] += 1
+    elif tblw.get(qn("w:w")) != "5000" or tblw.get(qn("w:type")) != "pct":
+        stats["table_width_format"] += 1
+    tblw.set(qn("w:w"), "5000")
+    tblw.set(qn("w:type"), "pct")
+
+    removed_layout = remove_children_by_local_name(tblpr, {"tblLayout"})
+    if removed_layout:
+        stats["table_width_format"] += removed_layout
+    return stats
+
+
 def remove_children_by_local_name(parent: Optional[etree._Element], local_names: Set[str]) -> int:
     if parent is None:
         return 0
@@ -680,6 +700,7 @@ def normalize_xml(
     if table_style_id:
         for tbl in root.xpath(".//w:tbl", namespaces=NS):
             set_table_style(tbl, table_style_id, table_look)
+            cleanup_stats.update(normalize_table_width(tbl))
             cleanup_stats.update(cleanup_table_cell_direct_formatting(tbl))
             table_stats[table_style_id] += 1
 
@@ -760,6 +781,7 @@ def generate_report(
             "paragraph_direct_format": "段落直接格式",
             "run_direct_format": "文字直接格式",
             "table_cell_direct_format": "表格单元格边框/底纹直接格式",
+            "table_width_format": "表格总宽/固定布局直接格式",
             "table_column_width_format": "表格列宽直接格式",
         }
         for key, label in labels.items():

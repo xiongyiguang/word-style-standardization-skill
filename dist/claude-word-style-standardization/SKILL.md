@@ -78,7 +78,8 @@ The script applies the bundled template styles:
 - Apply the template table style named `表格标准样式` to table objects by resolving its real table styleId from the template. Do not hard-code the styleId.
 - For tables, only update `w:tblPr/w:tblStyle` and the template `w:tblLook`; do not rebuild tables or change rows, columns, merged cells, images, or embedded objects.
 - For table cells, remove direct borders and shading that override the template table style (`w:tcPr/w:tcBorders`, `w:tcPr/w:shd`). Preserve structural and layout properties such as `gridSpan`, `vMerge`, `vAlign`, and `textDirection`.
-- For table column width, remove source column-width constraints (`w:tblGrid`, `w:tcPr/w:tcW`) but preserve table-wide width (`w:tblPr/w:tblW`) so Word can redistribute columns automatically.
+- For table width, set table-wide width to 100% page width (`w:tblPr/w:tblW` as `w:type="pct"`, `w:w="5000"`) to avoid preserving source absolute widths that exceed page bounds.
+- For table column width, remove source column-width constraints (`w:tblGrid`, `w:tcPr/w:tcW`) and fixed layout constraints (`w:tblPr/w:tblLayout[@w:type="fixed"]`) so Word can redistribute columns automatically within the 100% table width.
 - For headings, remove direct paragraph/run formatting that overrides template heading styles.
 - For body, list, and table paragraphs, remove direct font, size, color, spacing, and indentation while preserving semantic emphasis such as bold, italic, underline, and highlight.
 
