@@ -1,5 +1,7 @@
 # word-style-standardization Claude Skill
 
+Word 标准样式规整skill。这个 Skill 可以清理源 Word 文件中混乱、多余的样式，将标题、正文、表格、图片、列表等内容统一套用标准 Word 模板样式。处理后会生成一个新的规整版 Word 文件，后续只需在 Word 中对样式做一次点击/刷新，即可得到整体格式统一、对象关系完整的标准化文档。
+
 这个 Claude Skill 用于将 `.docx` 文件按标准 Word 模板进行原位样式规整。
 
 重点原则：
