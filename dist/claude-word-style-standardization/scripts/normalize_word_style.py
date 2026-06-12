@@ -343,6 +343,7 @@ def parse_style_hints(styles_file: Path) -> Dict[str, object]:
         "table": set(),
         "image": set(),
         "bold": set(),
+        "list": {},
     }
     if not styles_file.exists():
         return hints
@@ -403,6 +404,12 @@ def parse_style_hints(styles_file: Path) -> Dict[str, object]:
             hints["image"].add(sid)
         elif any(token in name for token in ("粗体", "重点")) or "bold" in lower_name:
             hints["bold"].add(sid)
+        elif "箭头" in name or sid == STYLE["list1"]:
+            hints["list"][sid] = 1
+        elif "打钩" in name or sid == STYLE["list2"]:
+            hints["list"][sid] = 2
+        elif "四角星" in name or sid == STYLE["list3"]:
+            hints["list"][sid] = 3
         elif any(token in name for token in ("正文", "段落", "body text")) or "normal" in lower_name:
             hints["body"].add(sid)
 
@@ -657,6 +664,16 @@ def style_hint_contains(style_hints: Dict[str, object], kind: str, style_id: Opt
     return bool(style_id and isinstance(values, set) and style_id in values)
 
 
+def list_level_from_style_hint(style_hints: Dict[str, object], style_id: Optional[str]) -> Optional[int]:
+    values = style_hints.get("list", {})
+    if not style_id or not isinstance(values, dict):
+        return None
+    level = values.get(style_id)
+    if isinstance(level, int):
+        return min(max(level, 1), 3)
+    return None
+
+
 def choose_style(p: etree._Element, style_hints: Dict[str, object], numbering: NumberingMaterializer) -> Tuple[str, bool]:
     """返回 (style_id, should_remove_numpr)。"""
     text = get_text(p)
@@ -673,6 +690,10 @@ def choose_style(p: etree._Element, style_hints: Dict[str, object], numbering: N
 
     if is_in_table(p) or style_hint_contains(style_hints, "table", current):
         return STYLE["table"], True
+
+    source_list_level = list_level_from_style_hint(style_hints, current)
+    if source_list_level and (not has_numpr(p) or numbering.is_bullet(p)):
+        return STYLE[f"list{source_list_level}"], True
 
     lvl = bullet_level(p, text, numbering)
     if lvl:
