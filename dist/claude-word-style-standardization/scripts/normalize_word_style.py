@@ -34,13 +34,22 @@ STYLE = {
     "bold_body": "P",
     "table": "P5",
     "image": "P6",
+    "list_square": "P10",
     "list1": "P2",
     "list2": "P3",
     "list3": "P4",
 }
 
 HEADING_STYLE_IDS = set(STYLE["heading"].values())
-BODY_STYLE_IDS = {STYLE["body"], STYLE["bold_body"], STYLE["table"], STYLE["list1"], STYLE["list2"], STYLE["list3"]}
+BODY_STYLE_IDS = {
+    STYLE["body"],
+    STYLE["bold_body"],
+    STYLE["table"],
+    STYLE["list_square"],
+    STYLE["list1"],
+    STYLE["list2"],
+    STYLE["list3"],
+}
 PARAGRAPH_DIRECT_FORMAT_TAGS = {"rPr", "spacing", "ind"}
 RUN_DIRECT_FORMAT_TAGS = {"rFonts", "sz", "szCs", "color"}
 HEADING_RUN_DIRECT_FORMAT_TAGS = RUN_DIRECT_FORMAT_TAGS | {"b", "bCs", "i", "iCs", "u", "highlight"}
@@ -335,7 +344,17 @@ def insert_prefix_text(p: etree._Element, prefix: str) -> None:
     p.insert(insert_at, run)
 
 
-def parse_style_hints(styles_file: Path) -> Dict[str, object]:
+def template_list_style_for_bullet_text(text: Optional[str]) -> str:
+    mapping = {
+        "\uf06e": STYLE["list_square"],
+        "\uf0d8": STYLE["list1"],
+        "\uf0fc": STYLE["list2"],
+        "\uf0b2": STYLE["list3"],
+    }
+    return mapping.get(text or "", STYLE["list1"])
+
+
+def parse_style_hints(styles_file: Path, numbering_definitions: Optional[Dict[str, Dict[int, Dict[str, str]]]] = None) -> Dict[str, object]:
     """读取源文档样式定义，避免替换模板样式后丢失原 styleId 语义。"""
     hints: Dict[str, object] = {
         "heading": {},
@@ -352,6 +371,7 @@ def parse_style_hints(styles_file: Path) -> Dict[str, object]:
     root = etree.parse(str(styles_file), parser).getroot()
     names: Dict[str, str] = {}
     based_on: Dict[str, str] = {}
+    style_num_pr: Dict[str, Tuple[str, int]] = {}
     paragraph_styles: Set[str] = set()
 
     for style in root.xpath(".//w:style[@w:type='paragraph']", namespaces=NS):
@@ -364,6 +384,11 @@ def parse_style_hints(styles_file: Path) -> Dict[str, object]:
         names[sid] = (name_node.get(qn("w:val")) if name_node is not None else "").strip()
         if based_node is not None and based_node.get(qn("w:val")):
             based_on[sid] = based_node.get(qn("w:val"))
+        num_id = style.xpath("./w:pPr/w:numPr/w:numId/@w:val", namespaces=NS)
+        ilvl = style.xpath("./w:pPr/w:numPr/w:ilvl/@w:val", namespaces=NS)
+        if num_id:
+            ilvl_text = ilvl[0] if ilvl else "0"
+            style_num_pr[sid] = (num_id[0], int(ilvl_text) if ilvl_text.isdigit() else 0)
 
     def direct_heading_level(sid: str) -> Optional[int]:
         name = names.get(sid, "")
@@ -402,14 +427,21 @@ def parse_style_hints(styles_file: Path) -> Dict[str, object]:
             hints["table"].add(sid)
         elif any(token in name for token in ("图片", "图文", "图内容")) or "figure" in lower_name:
             hints["image"].add(sid)
+        elif "方块" in name or sid == STYLE["list_square"]:
+            hints["list"][sid] = STYLE["list_square"]
+        elif "箭头" in name or sid == STYLE["list1"]:
+            hints["list"][sid] = STYLE["list1"]
+        elif "打钩" in name or sid == STYLE["list2"]:
+            hints["list"][sid] = STYLE["list2"]
+        elif "四角星" in name or sid == STYLE["list3"]:
+            hints["list"][sid] = STYLE["list3"]
+        elif numbering_definitions and sid in style_num_pr:
+            num_id, ilvl = style_num_pr[sid]
+            level_def = numbering_definitions.get(num_id, {}).get(ilvl)
+            if level_def and level_def.get("fmt") == "bullet":
+                hints["list"][sid] = template_list_style_for_bullet_text(level_def.get("text"))
         elif any(token in name for token in ("粗体", "重点")) or "bold" in lower_name:
             hints["bold"].add(sid)
-        elif "箭头" in name or sid == STYLE["list1"]:
-            hints["list"][sid] = 1
-        elif "打钩" in name or sid == STYLE["list2"]:
-            hints["list"][sid] = 2
-        elif "四角星" in name or sid == STYLE["list3"]:
-            hints["list"][sid] = 3
         elif any(token in name for token in ("正文", "段落", "body text")) or "normal" in lower_name:
             hints["body"].add(sid)
 
@@ -664,14 +696,12 @@ def style_hint_contains(style_hints: Dict[str, object], kind: str, style_id: Opt
     return bool(style_id and isinstance(values, set) and style_id in values)
 
 
-def list_level_from_style_hint(style_hints: Dict[str, object], style_id: Optional[str]) -> Optional[int]:
+def list_style_from_style_hint(style_hints: Dict[str, object], style_id: Optional[str]) -> Optional[str]:
     values = style_hints.get("list", {})
     if not style_id or not isinstance(values, dict):
         return None
-    level = values.get(style_id)
-    if isinstance(level, int):
-        return min(max(level, 1), 3)
-    return None
+    style = values.get(style_id)
+    return style if isinstance(style, str) else None
 
 
 def choose_style(p: etree._Element, style_hints: Dict[str, object], numbering: NumberingMaterializer) -> Tuple[str, bool]:
@@ -691,9 +721,9 @@ def choose_style(p: etree._Element, style_hints: Dict[str, object], numbering: N
     if is_in_table(p) or style_hint_contains(style_hints, "table", current):
         return STYLE["table"], True
 
-    source_list_level = list_level_from_style_hint(style_hints, current)
-    if source_list_level and (not has_numpr(p) or numbering.is_bullet(p)):
-        return STYLE[f"list{source_list_level}"], True
+    source_list_style = list_style_from_style_hint(style_hints, current)
+    if source_list_style and (not has_numpr(p) or numbering.is_bullet(p)):
+        return source_list_style, True
 
     lvl = bullet_level(p, text, numbering)
     if lvl:
@@ -849,8 +879,9 @@ def normalize_docx(
         template.mkdir()
         unzip_docx(input_file, work)
         unzip_docx(template_file, template)
-        style_hints = parse_style_hints(work / "word/styles.xml")
-        numbering = NumberingMaterializer(parse_numbering(work / "word/numbering.xml"))
+        numbering_definitions = parse_numbering(work / "word/numbering.xml")
+        style_hints = parse_style_hints(work / "word/styles.xml", numbering_definitions)
+        numbering = NumberingMaterializer(numbering_definitions)
         table_style_id = parse_table_style_id(template / "word/styles.xml")
         table_look = parse_template_table_look(template / "word/document.xml", table_style_id)
         copied_parts = copy_template_parts(template, work)
